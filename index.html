@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Amigo Oculto</title>
+<style>
+  :root {
+    --bg: #fdf6ec; --card: #ffffff; --text: #2b2118; --muted: #7a6a5c;
+    --accent: #c0392b; --accent-2: #1e7a4c; --border: #eadfd2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17130f; --card: #221c17; --text: #f3e9dd; --muted: #a8988a;
+            --accent: #e0574a; --accent-2: #3fae77; --border: #3a3029; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg);
+         color: var(--text); display: flex; justify-content: center; padding: 24px 16px; }
+  main { width: 100%; max-width: 520px; }
+  h1 { text-align: center; margin: 0 0 4px; }
+  .sub { text-align: center; color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+  .row { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; padding: 12px; font-size: 16px; border-radius: 10px;
+          border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  button { padding: 12px 16px; font-size: 16px; border: 0; border-radius: 10px; cursor: pointer;
+           background: var(--accent); color: #fff; font-weight: 600; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  button.green { background: var(--accent-2); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  ul { list-style: none; padding: 0; margin: 16px 0; }
+  li { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+       padding: 10px 0; border-bottom: 1px solid var(--border); }
+  li:last-child { border-bottom: 0; }
+  .x { background: none; color: var(--muted); padding: 4px 8px; font-size: 18px; }
+  .full { width: 100%; margin-top: 8px; }
+  .hint { color: var(--muted); font-size: 14px; }
+  .actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .actions button { padding: 8px 12px; font-size: 14px; }
+  .reveal { text-align: center; }
+  .secret { font-size: 32px; font-weight: 700; margin: 16px 0; color: var(--accent); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎁 Amigo Oculto</h1>
+
+  <!-- Tela 1: cadastro de nomes -->
+  <section id="setup">
+    <p class="sub">Coloque o nome de todo mundo e sorteie.</p>
+    <div class="card">
+      <form id="add-form" class="row">
+        <input id="name-input" placeholder="Nome" autocomplete="off" autofocus>
+        <button type="submit">Adicionar</button>
+      </form>
+      <ul id="name-list"></ul>
+      <p id="count" class="hint"></p>
+      <button id="draw-btn" class="full green" disabled>Sortear</button>
+    </div>
+  </section>
+
+  <!-- Tela 2: links gerados -->
+  <section id="links" class="hidden">
+    <p class="sub">Sorteio feito! Ninguém viu o resultado.<br>Mande o link de cada pessoa só pra ela.</p>
+    <div class="card">
+      <ul id="link-list"></ul>
+      <button id="restart-btn" class="full secondary">Novo sorteio</button>
+    </div>
+  </section>
+
+  <!-- Tela 3: pessoa abrindo o próprio link -->
+  <section id="view" class="hidden">
+    <div class="card reveal">
+      <p>Olá, <strong id="giver-name"></strong>!</p>
+      <p class="hint">Confira se o nome acima é o seu antes de abrir.</p>
+      <button id="reveal-btn">Ver quem eu tirei</button>
+      <div id="secret-box" class="hidden">
+        <p>Você tirou:</p>
+        <p id="receiver-name" class="secret"></p>
+        <p class="hint">Guarde segredo 🤫</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const names = [];
+const $ = (id) => document.getElementById(id);
+
+// Inteiro aleatório em [0, max) usando crypto, com rejeição pra evitar viés de módulo.
+function randomInt(max) {
+  const limit = Math.floor(0x100000000 / max) * max;
+  const buf = new Uint32Array(1);
+  do { crypto.getRandomValues(buf); } while (buf[0] >= limit);
+  return buf[0] % max;
+}
+
+// Fisher-Yates + rejeição até ninguém tirar a si mesmo.
+// Isso dá uma distribuição uniforme sobre todos os sorteios válidos (desarranjos),
+// ou seja, o mais aleatório possível. ~37% das permutações são válidas, então é rápido.
+function draw(list) {
+  const n = list.length;
+  while (true) {
+    const p = [...Array(n).keys()];
+    for (let i = n - 1; i > 0; i--) {
+      const j = randomInt(i + 1);
+      [p[i], p[j]] = [p[j], p[i]];
+    }
+    if (p.every((v, i) => v !== i)) return p;
+  }
+}
+
+// Codifica o par num texto ilegível a olho nu (não é segurança, só pra não dar spoiler no link).
+function encode(obj) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  const key = 0x5a;
+  const bin = String.fromCharCode(...bytes.map((b, i) => b ^ ((key + i * 31) & 255)));
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function decode(str) {
+  const bin = atob(str.replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = Uint8Array.from(bin, (c, i) => c.charCodeAt(0) ^ ((0x5a + i * 31) & 255));
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function renderNames() {
+  $('name-list').innerHTML = '';
+  names.forEach((name, i) => {
+    const li = document.createElement('li');
+    li.textContent = name;
+    const x = document.createElement('button');
+    x.className = 'x'; x.textContent = '✕'; x.title = 'Remover';
+    x.onclick = () => { names.splice(i, 1); renderNames(); };
+    li.appendChild(x);
+    $('name-list').appendChild(li);
+  });
+  $('count').textContent = names.length < 3
+    ? `Mínimo de 3 pessoas (${names.length} até agora).`
+    : `${names.length} pessoas.`;
+  $('draw-btn').disabled = names.length < 3;
+}
+
+$('add-form').onsubmit = (e) => {
+  e.preventDefault();
+  const name = $('name-input').value.trim();
+  if (!name) return;
+  if (names.some((n) => n.toLowerCase() === name.toLowerCase())) {
+    alert('Esse nome já está na lista.'); return;
+  }
+  names.push(name);
+  $('name-input').value = '';
+  $('name-input').focus();
+  renderNames();
+};
+
+$('draw-btn').onclick = () => {
+  const p = draw(names);
+  const base = location.href.split('#')[0];
+  $('link-list').innerHTML = '';
+  names.forEach((giver, i) => {
+    const url = `${base}#${encode({ g: giver, r: names[p[i]] })}`;
+    const li = document.createElement('li');
+    const label = document.createElement('span');
+    label.textContent = giver;
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+
+    const copy = document.createElement('button');
+    copy.className = 'secondary'; copy.textContent = 'Copiar';
+    copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(url); copy.textContent = 'Copiado ✓'; }
+      catch { prompt('Copie o link:', url); }
+    };
+
+    const wpp = document.createElement('button');
+    wpp.className = 'green'; wpp.textContent = 'WhatsApp';
+    wpp.onclick = () => window.open(
+      'https://wa.me/?text=' + encodeURIComponent(`${giver}, seu amigo oculto está aqui (só abra se for você 😉): ${url}`),
+      '_blank'
+    );
+
+    actions.append(copy, wpp);
+    li.append(label, actions);
+    $('link-list').appendChild(li);
+  });
+  $('setup').classList.add('hidden');
+  $('links').classList.remove('hidden');
+};
+
+$('restart-btn').onclick = () => {
+  if (!confirm('Descartar este sorteio e começar outro? Os links atuais continuam funcionando.')) return;
+  $('links').classList.add('hidden');
+  $('setup').classList.remove('hidden');
+};
+
+$('reveal-btn').onclick = () => {
+  $('reveal-btn').classList.add('hidden');
+  $('secret-box').classList.remove('hidden');
+};
+
+// Se a URL tem um hash, é alguém abrindo o próprio link.
+const hash = location.hash.slice(1);
+if (hash) {
+  try {
+    const { g, r } = decode(hash);
+    $('giver-name').textContent = g;
+    $('receiver-name').textContent = r;
+    $('setup').classList.add('hidden');
+    $('view').classList.remove('hidden');
+  } catch {
+    alert('Link inválido.');
+  }
+}
+renderNames();
+</script>
+</body>
+</html>
